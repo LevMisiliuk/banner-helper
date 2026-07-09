@@ -1,0 +1,13 @@
+node_modules/
+dist/
+__pycache__/
+*.py[cod]
+
+results/
+results-test/
+sample/
+
+.DS_Store
+.env
+.env.*
+!.env.example
