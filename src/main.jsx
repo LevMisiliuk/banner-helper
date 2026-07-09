@@ -1,14 +1,20 @@
 import React, { useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import JSZip from "jszip";
+import { driver } from "driver.js";
+import "driver.js/dist/driver.css";
 import {
   Archive,
-  Check,
   ChevronRight,
   Download,
   FileImage,
   FolderOpen,
+  Github,
+  Heart,
+  HelpCircle,
   Images,
+  Instagram,
+  Linkedin,
   Loader2,
   Play,
   SlidersHorizontal,
@@ -241,7 +247,7 @@ async function renderJob(parentFile, bannerFile, options) {
   }
 }
 
-function FileDrop({ title, subtitle, files, onFiles, icon: Icon, accent, targetCount }) {
+function FileDrop({ title, subtitle, files, onFiles, icon: Icon, accent, tourId }) {
   const inputRef = useRef(null);
   const folderInputRef = useRef(null);
 
@@ -253,6 +259,7 @@ function FileDrop({ title, subtitle, files, onFiles, icon: Icon, accent, targetC
   return (
     <section
       className="drop-zone"
+      data-tour={tourId}
       style={{ "--accent": accent }}
       onDragOver={(event) => event.preventDefault()}
       onDrop={(event) => {
@@ -310,10 +317,7 @@ function FileDrop({ title, subtitle, files, onFiles, icon: Icon, accent, targetC
         )}
       </div>
       <div className="drop-meta">
-        <span>
-          {formatFilesCount(files.length)}
-          {targetCount ? ` із ${targetCount}` : ""}
-        </span>
+        <span>{formatFilesCount(files.length)}</span>
         <span>{formatBytes(files.reduce((sum, file) => sum + file.size, 0))}</span>
       </div>
     </section>
@@ -376,7 +380,7 @@ function App() {
   }, [banners.length, pairing, parents.length]);
 
   const jobSummary = useMemo(() => {
-    if (!parents.length && !banners.length) return "Основний сценарій: 10 скриншотів + 10 маленьких банерів = 10 готових зображень.";
+    if (!parents.length && !banners.length) return "Основний сценарій: додайте зображення та банери, а інструмент з'єднає їх у потрібному порядку.";
     if (pairing === "zip") {
       if (parents.length !== banners.length) {
         return `Режим по парах: буде створено ${jobCount}. Зайві файли з більшої групи не використовуються.`;
@@ -431,6 +435,66 @@ function App() {
     URL.revokeObjectURL(url);
   }
 
+  function startTutorial() {
+    driver({
+      showProgress: true,
+      animate: true,
+      allowClose: true,
+      overlayClickBehavior: "close",
+      progressText: "{{current}} з {{total}}",
+      stagePadding: 8,
+      stageRadius: 20,
+      popoverClass: "banner-tour-popover",
+      nextBtnText: "Далі",
+      prevBtnText: "Назад",
+      doneBtnText: "Готово",
+      steps: [
+        {
+          element: ".topbar",
+          popover: {
+            title: "Помічник банерів",
+            description: "Це короткий тур по інструменту. Він показує, куди додавати файли та де забирати результат.",
+          },
+        },
+        {
+          element: '[data-tour="parents"]',
+          popover: {
+            title: "1. Додайте скриншоти",
+            description: "Оберіть повні зображення сторінки, у яких потрібно замінити старий банер.",
+          },
+        },
+        {
+          element: '[data-tour="banners"]',
+          popover: {
+            title: "2. Додайте банери",
+            description: "Додайте маленькі банери. У режимі по парах перший банер піде в перший скриншот, другий у другий і так далі.",
+          },
+        },
+        {
+          element: '[data-tour="options"]',
+          popover: {
+            title: "3. Налаштуйте режим",
+            description: "Оберіть поєднання файлів, спосіб пошуку слота та масштабування банера.",
+          },
+        },
+        {
+          element: '[data-tour="generate"]',
+          popover: {
+            title: "4. Згенеруйте",
+            description: "Коли файли додані, натисніть кнопку генерації. Результати з'являться праворуч.",
+          },
+        },
+        {
+          element: '[data-tour="results"]',
+          popover: {
+            title: "5. Завантажте результат",
+            description: "Тут можна переглянути готові зображення, завантажити окремий файл або весь ZIP.",
+          },
+        },
+      ],
+    }).drive();
+  }
+
   return (
     <main className="app-shell">
       <header className="topbar">
@@ -439,36 +503,36 @@ function App() {
         </div>
         <div>
           <h1>Помічник банерів</h1>
-          <p>Пакетна заміна маленьких банерів у скриншотах без Photoshop.</p>
+          <p>Пакетна заміна маленьких банерів у скриншотах.</p>
         </div>
-        <div className="status-chip">
-          <Check size={15} />
-          локально
-        </div>
+        <button type="button" className="tutorial-button" onClick={startTutorial}>
+          <HelpCircle size={18} />
+          Як це працює?
+        </button>
       </header>
 
       <section className="workspace">
         <div className="left-rail">
           <FileDrop
             title="Батьківські зображення"
-            subtitle="10 повних скриншотів сторінки, у яких потрібно замінити банер."
+            subtitle="Повні скриншоти сторінки, у яких потрібно замінити банер."
             files={parents}
             onFiles={setParents}
             icon={Images}
             accent="#1ca84b"
-            targetCount={10}
+            tourId="parents"
           />
           <FileDrop
             title="Нові банери"
-            subtitle="10 маленьких банерів, які будуть підставлені у тому самому порядку."
+            subtitle="Маленькі банери, які будуть підставлені у тому самому порядку."
             files={banners}
             onFiles={setBanners}
             icon={FileImage}
             accent="#ff6a2a"
-            targetCount={10}
+            tourId="banners"
           />
 
-          <section className="control-panel">
+          <section className="control-panel" data-tour="options">
             <div className="panel-heading">
               <SlidersHorizontal size={18} />
               <h2>Опції</h2>
@@ -482,7 +546,7 @@ function App() {
                 onChange={setPairing}
                 options={[
                   { value: "zip", label: "По парах", hint: "1-й скрин + 1-й банер" },
-                  { value: "all", label: "Усі комбінації", hint: "10 × 10 = 100" },
+                  { value: "all", label: "Усі комбінації", hint: "кожен з кожним" },
                 ]}
               />
             </label>
@@ -527,7 +591,7 @@ function App() {
               />
             </label>
 
-            <button type="button" className="run-button" disabled={!canRun} onClick={generate}>
+            <button type="button" className="run-button" disabled={!canRun} onClick={generate} data-tour="generate">
               {isRunning ? <Loader2 className="spin" size={20} /> : <Play size={20} />}
               {jobCount ? `Згенерувати ${jobCount}` : "Згенерувати"}
               <ChevronRight size={18} />
@@ -535,7 +599,7 @@ function App() {
           </section>
         </div>
 
-        <section className="output-panel">
+        <section className="output-panel" data-tour="results">
           <div className="output-header">
             <div>
               <h2>Результати</h2>
@@ -575,11 +639,32 @@ function App() {
                 <Images size={48} />
               </div>
               <h2>Готово до пакетної заміни</h2>
-              <p>Додайте 10 скриншотів і 10 банерів, потім натисніть “Згенерувати”.</p>
+              <p>Додайте скриншоти й банери, потім натисніть “Згенерувати”.</p>
             </div>
           )}
         </section>
       </section>
+
+      <footer className="site-footer" id="footer">
+        <p className="footer-credit">Solution designed by Valeriia Misiliuk</p>
+
+        <div className="footer-socials" aria-label="Social links">
+          <a href="https://github.com/LevMisiliuk/banner-helper" target="_blank" rel="noreferrer" aria-label="GitHub">
+            <Github size={18} />
+          </a>
+          <a href="https://www.linkedin.com/" target="_blank" rel="noreferrer" aria-label="LinkedIn">
+            <Linkedin size={18} />
+          </a>
+          <a href="https://www.instagram.com/" target="_blank" rel="noreferrer" aria-label="Instagram">
+            <Instagram size={18} />
+          </a>
+        </div>
+
+        <div className="footer-love">
+          <span>Made with love for better everyday work</span>
+          <Heart size={15} fill="currentColor" />
+        </div>
+      </footer>
     </main>
   );
 }
