@@ -17,6 +17,7 @@ import {
   Linkedin,
   Loader2,
   Play,
+  ScanLine,
   SlidersHorizontal,
   Sparkles,
   Trash2,
@@ -221,6 +222,62 @@ function scoreSlot(slot, imageWidth, imageHeight) {
   return aspectScore * 4 + sizeScore * 2 + centerBias + topPenalty;
 }
 
+function roundedRectPath(ctx, x, y, width, height, radius) {
+  const safeRadius = Math.min(radius, width / 2, height / 2);
+
+  ctx.beginPath();
+  ctx.moveTo(x + safeRadius, y);
+  ctx.lineTo(x + width - safeRadius, y);
+  ctx.quadraticCurveTo(x + width, y, x + width, y + safeRadius);
+  ctx.lineTo(x + width, y + height - safeRadius);
+  ctx.quadraticCurveTo(x + width, y + height, x + width - safeRadius, y + height);
+  ctx.lineTo(x + safeRadius, y + height);
+  ctx.quadraticCurveTo(x, y + height, x, y + height - safeRadius);
+  ctx.lineTo(x, y + safeRadius);
+  ctx.quadraticCurveTo(x, y, x + safeRadius, y);
+  ctx.closePath();
+}
+
+function sampleSlotBackground(imageData, slot) {
+  const samples = [];
+  const margin = 10;
+  const step = 4;
+
+  function addSample(x, y) {
+    if (x < 0 || y < 0 || x >= imageData.width || y >= imageData.height) return;
+
+    const index = (y * imageData.width + x) * 4;
+    const red = imageData.data[index];
+    const green = imageData.data[index + 1];
+    const blue = imageData.data[index + 2];
+
+    if (green > 120 && green - red > 45 && green - blue > 45) return;
+    samples.push([red, green, blue]);
+  }
+
+  for (let x = slot.x; x <= slot.x + slot.width; x += step) {
+    addSample(x, slot.y - margin);
+    addSample(x, slot.y + slot.height + margin);
+  }
+
+  for (let y = slot.y; y <= slot.y + slot.height; y += step) {
+    addSample(slot.x - margin, y);
+    addSample(slot.x + slot.width + margin, y);
+  }
+
+  if (!samples.length) return "rgb(255, 255, 255)";
+
+  const totals = samples.reduce(
+    (sum, sample) => [sum[0] + sample[0], sum[1] + sample[1], sum[2] + sample[2]],
+    [0, 0, 0],
+  );
+
+  const red = Math.round(totals[0] / samples.length);
+  const green = Math.round(totals[1] / samples.length);
+  const blue = Math.round(totals[2] / samples.length);
+  return `rgb(${red}, ${green}, ${blue})`;
+}
+
 function detectGreenSlot(imageData, width, height) {
   const data = imageData.data;
   const mask = new Uint8Array(width * height);
@@ -239,20 +296,41 @@ function detectGreenSlot(imageData, width, height) {
   });
 
   if (!plausible.length) {
-    throw new Error("Не вдалося знайти зелений банерний слот");
+    throw new Error("Не вдалося знайти зелений банерний слот. Перемкніть режим на “Вручну” та оберіть слот рамкою.");
   }
 
   return plausible.sort((a, b) => scoreSlot(b, width, height) - scoreSlot(a, width, height))[0];
 }
 
-function drawBanner(ctx, bannerImage, slot, mode) {
+function drawBanner(ctx, bannerImage, slot, mode, cornerRadius, sourceImageData) {
+  const radius = Number.isFinite(Number(cornerRadius)) ? Number(cornerRadius) : 0;
+
+  if (sourceImageData && radius > 0) {
+    const cleanupPadding = Math.max(3, Math.min(8, Math.round(radius * 0.18)));
+    ctx.fillStyle = sampleSlotBackground(sourceImageData, slot);
+    ctx.fillRect(
+      slot.x - cleanupPadding,
+      slot.y - cleanupPadding,
+      slot.width + cleanupPadding * 2,
+      slot.height + cleanupPadding * 2,
+    );
+  }
+
+  ctx.save();
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = "high";
+  roundedRectPath(ctx, slot.x, slot.y, slot.width, slot.height, radius);
+  ctx.clip();
+
   if (mode === "exact") {
     ctx.drawImage(bannerImage, slot.x, slot.y);
+    ctx.restore();
     return;
   }
 
   if (mode === "fit") {
     ctx.drawImage(bannerImage, slot.x, slot.y, slot.width, slot.height);
+    ctx.restore();
     return;
   }
 
@@ -262,6 +340,7 @@ function drawBanner(ctx, bannerImage, slot, mode) {
   const x = slot.x + (slot.width - width) / 2;
   const y = slot.y + (slot.height - height) / 2;
   ctx.drawImage(bannerImage, x, y, width, height);
+  ctx.restore();
 }
 
 async function renderJob(parentFile, bannerFile, options) {
@@ -277,17 +356,18 @@ async function renderJob(parentFile, bannerFile, options) {
     const ctx = canvas.getContext("2d", { willReadFrequently: true });
     ctx.drawImage(parentImage, 0, 0);
 
+    const sourceImageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
     const slot =
-      options.slotMode === "manual"
-        ? {
+      options.slotMode === "auto"
+        ? detectGreenSlot(sourceImageData, canvas.width, canvas.height)
+        : {
             x: Number(options.manual.x),
             y: Number(options.manual.y),
             width: Number(options.manual.width),
             height: Number(options.manual.height),
-          }
-        : detectGreenSlot(ctx.getImageData(0, 0, canvas.width, canvas.height), canvas.width, canvas.height);
+          };
 
-    drawBanner(ctx, bannerImage, slot, options.pasteMode);
+    drawBanner(ctx, bannerImage, slot, options.pasteMode, options.cornerRadius, sourceImageData);
 
     const type = parentFile.type === "image/jpeg" ? "image/jpeg" : "image/png";
     const blob = await new Promise((resolve) => canvas.toBlob(resolve, type, type === "image/jpeg" ? 0.95 : undefined));
@@ -457,6 +537,108 @@ function ImagePreview({ result, onClose }) {
   );
 }
 
+function SlotPicker({ file, initialSlot, onConfirm, onClose }) {
+  const imageRef = useRef(null);
+  const [imageUrl, setImageUrl] = useState("");
+  const [imageSize, setImageSize] = useState({ width: 1, height: 1 });
+  const [draft, setDraft] = useState(initialSlot);
+  const [dragStart, setDragStart] = useState(null);
+
+  useEffect(() => {
+    if (!file) return undefined;
+
+    const url = URL.createObjectURL(file);
+    const image = new Image();
+    image.onload = () => setImageSize({ width: image.naturalWidth, height: image.naturalHeight });
+    image.src = url;
+    setImageUrl(url);
+
+    return () => URL.revokeObjectURL(url);
+  }, [file]);
+
+  useEffect(() => {
+    setDraft(initialSlot);
+  }, [initialSlot]);
+
+  function pointFromEvent(event) {
+    const bounds = imageRef.current.getBoundingClientRect();
+    const x = ((event.clientX - bounds.left) / bounds.width) * imageSize.width;
+    const y = ((event.clientY - bounds.top) / bounds.height) * imageSize.height;
+    return {
+      x: Math.max(0, Math.min(imageSize.width, x)),
+      y: Math.max(0, Math.min(imageSize.height, y)),
+    };
+  }
+
+  function startDrag(event) {
+    event.preventDefault();
+    const point = pointFromEvent(event);
+    setDragStart(point);
+    setDraft({ x: Math.round(point.x), y: Math.round(point.y), width: 1, height: 1 });
+  }
+
+  function moveDrag(event) {
+    if (!dragStart) return;
+
+    const point = pointFromEvent(event);
+    setDraft({
+      x: Math.round(Math.min(dragStart.x, point.x)),
+      y: Math.round(Math.min(dragStart.y, point.y)),
+      width: Math.round(Math.abs(point.x - dragStart.x)),
+      height: Math.round(Math.abs(point.y - dragStart.y)),
+    });
+  }
+
+  function finishDrag() {
+    setDragStart(null);
+  }
+
+  const overlayStyle = {
+    left: `${(draft.x / imageSize.width) * 100}%`,
+    top: `${(draft.y / imageSize.height) * 100}%`,
+    width: `${(draft.width / imageSize.width) * 100}%`,
+    height: `${(draft.height / imageSize.height) * 100}%`,
+  };
+
+  return (
+    <div className="slot-picker-modal" role="dialog" aria-modal="true" aria-label="Вибір банерного слота" onClick={onClose}>
+      <div className="slot-picker-card" onClick={(event) => event.stopPropagation()}>
+        <div className="slot-picker-header">
+          <div>
+            <strong>Обери місце банера</strong>
+            <span>Протягни рамку по старому банеру на скрині.</span>
+          </div>
+          <button type="button" className="icon-button" onClick={onClose} title="Закрити">
+            <X size={18} />
+          </button>
+        </div>
+
+        <div className="slot-picker-stage">
+          <div
+            className="slot-picker-image-wrap"
+            onPointerDown={startDrag}
+            onPointerMove={moveDrag}
+            onPointerUp={finishDrag}
+            onPointerLeave={finishDrag}
+          >
+            {imageUrl && <img ref={imageRef} src={imageUrl} alt={file.name} draggable="false" />}
+            <div className="slot-picker-selection" style={overlayStyle} />
+          </div>
+        </div>
+
+        <div className="slot-picker-footer">
+          <span>
+            x {draft.x}, y {draft.y} · {draft.width}×{draft.height}
+          </span>
+          <button type="button" className="choose-button" disabled={draft.width < 10 || draft.height < 10} onClick={() => onConfirm(draft)}>
+            Застосувати координати
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function App() {
   const [parents, setParents] = useState([]);
   const [banners, setBanners] = useState([]);
@@ -464,12 +646,14 @@ function App() {
   const [pasteMode, setPasteMode] = useState("fit");
   const [slotMode, setSlotMode] = useState("auto");
   const [manual, setManual] = useState({ x: 638, y: 401, width: 156, height: 304 });
+  const [cornerRadius, setCornerRadius] = useState(10);
   const [results, setResults] = useState([]);
   const resultsRef = useRef([]);
   const [log, setLog] = useState([]);
   const [isRunning, setIsRunning] = useState(false);
   const [isHistoryLoading, setIsHistoryLoading] = useState(true);
   const [previewResult, setPreviewResult] = useState(null);
+  const [isSlotPickerOpen, setIsSlotPickerOpen] = useState(false);
 
   useEffect(() => {
     resultsRef.current = results;
@@ -529,7 +713,7 @@ function App() {
       const [parent, banner] = jobs[index];
       setLog((items) => [`${index + 1}/${jobs.length}: ${parent.name} + ${banner.name}`, ...items].slice(0, 6));
       try {
-        const result = await renderJob(parent, banner, { pairing, pasteMode, slotMode, manual });
+        const result = await renderJob(parent, banner, { pairing, pasteMode, slotMode, manual, cornerRadius });
         setResults((items) => [result, ...items]);
         saveHistoryItem(result).catch(() => {
           setLog((items) => ["Не вдалося зберегти результат в історію", ...items].slice(0, 6));
@@ -601,7 +785,7 @@ function App() {
           element: '[data-tour="options"]',
           popover: {
             title: "3. Налаштуйте режим",
-            description: "Оберіть поєднання файлів, спосіб пошуку слота та масштабування банера.",
+            description: "Оберіть поєднання файлів, пошук зеленого слота або ручний fallback, та масштабування банера.",
           },
         },
         {
@@ -684,25 +868,32 @@ function App() {
                 value={slotMode}
                 onChange={setSlotMode}
                 options={[
-                  { value: "auto", label: "Автопошук", hint: "знаходить зелений слот" },
-                  { value: "manual", label: "Вручну", hint: "x, y, ширина, висота" },
+                  { value: "auto", label: "Зелений слот", hint: "основний режим" },
+                  { value: "manual", label: "Вручну", hint: "якщо авто не знайшло" },
                 ]}
               />
             </label>
 
             {slotMode === "manual" && (
-              <div className="manual-grid">
-                {["x", "y", "width", "height"].map((key) => (
-                  <label key={key}>
-                    {key}
-                    <input
-                      type="number"
-                      value={manual[key]}
-                      onChange={(event) => setManual((value) => ({ ...value, [key]: Number(event.target.value) }))}
-                    />
-                  </label>
-                ))}
-              </div>
+              <>
+                <button type="button" className="slot-picker-button" disabled={!parents.length} onClick={() => setIsSlotPickerOpen(true)}>
+                  <ScanLine size={18} />
+                  Обрати на першому скрині
+                </button>
+
+                <div className="manual-grid">
+                  {["x", "y", "width", "height"].map((key) => (
+                    <label key={key}>
+                      {key}
+                      <input
+                        type="number"
+                        value={manual[key]}
+                        onChange={(event) => setManual((value) => ({ ...value, [key]: Number(event.target.value) }))}
+                      />
+                    </label>
+                  ))}
+                </div>
+              </>
             )}
 
             <label>
@@ -716,6 +907,27 @@ function App() {
                   { value: "exact", label: "1:1", hint: "без зміни розміру" },
                 ]}
               />
+            </label>
+
+            <label>
+              Закруглення кутів банера
+              <div className="corner-control">
+                <input
+                  type="range"
+                  min="0"
+                  max="48"
+                  value={cornerRadius}
+                  onChange={(event) => setCornerRadius(Number(event.target.value))}
+                />
+                <input
+                  type="number"
+                  min="0"
+                  max="96"
+                  value={cornerRadius}
+                  onChange={(event) => setCornerRadius(Math.max(0, Number(event.target.value)))}
+                />
+                <span>px</span>
+              </div>
             </label>
 
             <button type="button" className="run-button" disabled={!canRun} onClick={generate} data-tour="generate">
@@ -785,6 +997,17 @@ function App() {
       </section>
 
       <ImagePreview result={previewResult} onClose={() => setPreviewResult(null)} />
+      {isSlotPickerOpen && parents[0] && (
+        <SlotPicker
+          file={parents[0]}
+          initialSlot={manual}
+          onClose={() => setIsSlotPickerOpen(false)}
+          onConfirm={(slot) => {
+            setManual(slot);
+            setIsSlotPickerOpen(false);
+          }}
+        />
+      )}
 
       <footer className="site-footer" id="footer">
         <p className="footer-credit">Solution designed by Valeriia Misiliuk</p>
