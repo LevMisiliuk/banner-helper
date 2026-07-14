@@ -1,4 +1,4 @@
-import React, { useMemo, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import JSZip from "jszip";
 import { driver } from "driver.js";
@@ -19,11 +19,76 @@ import {
   Play,
   SlidersHorizontal,
   Sparkles,
+  Trash2,
   X,
 } from "lucide-react";
 import "./styles.css";
 
 const IMAGE_TYPES = ["image/png", "image/jpeg", "image/webp", "image/bmp", "image/tiff"];
+const HISTORY_DB_NAME = "banner-helper-history";
+const HISTORY_STORE_NAME = "results";
+
+function openHistoryDb() {
+  return new Promise((resolve, reject) => {
+    if (!("indexedDB" in window)) {
+      resolve(null);
+      return;
+    }
+
+    const request = indexedDB.open(HISTORY_DB_NAME, 1);
+    request.onupgradeneeded = () => {
+      request.result.createObjectStore(HISTORY_STORE_NAME, { keyPath: "id" });
+    };
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+}
+
+async function readHistory() {
+  const db = await openHistoryDb();
+  if (!db) return [];
+
+  return new Promise((resolve, reject) => {
+    const transaction = db.transaction(HISTORY_STORE_NAME, "readonly");
+    const request = transaction.objectStore(HISTORY_STORE_NAME).getAll();
+    request.onsuccess = () => {
+      resolve(
+        request.result
+          .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
+          .map((item) => ({ ...item, url: URL.createObjectURL(item.blob) })),
+      );
+    };
+    request.onerror = () => reject(request.error);
+    transaction.oncomplete = () => db.close();
+  });
+}
+
+async function saveHistoryItem(result) {
+  const db = await openHistoryDb();
+  if (!db) return;
+
+  return new Promise((resolve, reject) => {
+    const { url, ...storedResult } = result;
+    const transaction = db.transaction(HISTORY_STORE_NAME, "readwrite");
+    const request = transaction.objectStore(HISTORY_STORE_NAME).put(storedResult);
+    request.onsuccess = () => resolve();
+    request.onerror = () => reject(request.error);
+    transaction.oncomplete = () => db.close();
+  });
+}
+
+async function clearHistoryStore() {
+  const db = await openHistoryDb();
+  if (!db) return;
+
+  return new Promise((resolve, reject) => {
+    const transaction = db.transaction(HISTORY_STORE_NAME, "readwrite");
+    const request = transaction.objectStore(HISTORY_STORE_NAME).clear();
+    request.onsuccess = () => resolve();
+    request.onerror = () => reject(request.error);
+    transaction.oncomplete = () => db.close();
+  });
+}
 
 function formatBytes(bytes) {
   if (!bytes) return "0 B";
@@ -240,6 +305,7 @@ async function renderJob(parentFile, bannerFile, options) {
       parentName: parentFile.name,
       bannerName: bannerFile.name,
       status: "done",
+      createdAt: new Date().toISOString(),
     };
   } finally {
     URL.revokeObjectURL(parentUrl);
@@ -342,12 +408,12 @@ function Segmented({ value, onChange, options }) {
   );
 }
 
-function ResultTile({ result }) {
+function ResultTile({ result, onPreview }) {
   return (
     <article className="result-tile">
-      <a href={result.url} download={result.filename} className="preview-link">
+      <button type="button" className="preview-link" onClick={() => onPreview(result)} aria-label={`Переглянути ${result.filename}`}>
         <img src={result.url} alt={result.filename} />
-      </a>
+      </button>
       <div className="result-info">
         <div>
           <strong>{result.filename}</strong>
@@ -363,6 +429,34 @@ function ResultTile({ result }) {
   );
 }
 
+function ImagePreview({ result, onClose }) {
+  if (!result) return null;
+
+  return (
+    <div className="preview-modal" role="dialog" aria-modal="true" aria-label="Перегляд зображення" onClick={onClose}>
+      <div className="preview-modal-card" onClick={(event) => event.stopPropagation()}>
+        <div className="preview-modal-header">
+          <div>
+            <strong>{result.filename}</strong>
+            <span>
+              {result.parentName} + {result.bannerName}
+            </span>
+          </div>
+          <div className="preview-modal-actions">
+            <a href={result.url} download={result.filename} className="icon-button" title="Завантажити зображення">
+              <Download size={18} />
+            </a>
+            <button type="button" className="icon-button" onClick={onClose} title="Закрити перегляд">
+              <X size={18} />
+            </button>
+          </div>
+        </div>
+        <img src={result.url} alt={result.filename} />
+      </div>
+    </div>
+  );
+}
+
 function App() {
   const [parents, setParents] = useState([]);
   const [banners, setBanners] = useState([]);
@@ -371,8 +465,35 @@ function App() {
   const [slotMode, setSlotMode] = useState("auto");
   const [manual, setManual] = useState({ x: 638, y: 401, width: 156, height: 304 });
   const [results, setResults] = useState([]);
+  const resultsRef = useRef([]);
   const [log, setLog] = useState([]);
   const [isRunning, setIsRunning] = useState(false);
+  const [isHistoryLoading, setIsHistoryLoading] = useState(true);
+  const [previewResult, setPreviewResult] = useState(null);
+
+  useEffect(() => {
+    resultsRef.current = results;
+  }, [results]);
+
+  useEffect(() => {
+    let isMounted = true;
+
+    readHistory()
+      .then((savedResults) => {
+        if (isMounted) setResults(savedResults);
+      })
+      .catch(() => {
+        if (isMounted) setLog((items) => ["Не вдалося завантажити історію результатів", ...items].slice(0, 6));
+      })
+      .finally(() => {
+        if (isMounted) setIsHistoryLoading(false);
+      });
+
+    return () => {
+      isMounted = false;
+      resultsRef.current.forEach((item) => URL.revokeObjectURL(item.url));
+    };
+  }, []);
 
   const jobCount = useMemo(() => {
     if (pairing === "zip") return Math.min(parents.length, banners.length);
@@ -402,10 +523,6 @@ function App() {
   async function generate() {
     setIsRunning(true);
     setLog([]);
-    results.forEach((item) => URL.revokeObjectURL(item.url));
-    setResults([]);
-
-    const nextResults = [];
     const jobs = buildJobs();
 
     for (let index = 0; index < jobs.length; index += 1) {
@@ -413,14 +530,24 @@ function App() {
       setLog((items) => [`${index + 1}/${jobs.length}: ${parent.name} + ${banner.name}`, ...items].slice(0, 6));
       try {
         const result = await renderJob(parent, banner, { pairing, pasteMode, slotMode, manual });
-        nextResults.push(result);
-        setResults([...nextResults]);
+        setResults((items) => [result, ...items]);
+        saveHistoryItem(result).catch(() => {
+          setLog((items) => ["Не вдалося зберегти результат в історію", ...items].slice(0, 6));
+        });
       } catch (error) {
         setLog((items) => [`Помилка: ${parent.name} — ${error.message}`, ...items].slice(0, 6));
       }
     }
 
     setIsRunning(false);
+  }
+
+  async function clearHistory() {
+    await clearHistoryStore();
+    results.forEach((item) => URL.revokeObjectURL(item.url));
+    setResults([]);
+    setPreviewResult(null);
+    setLog([]);
   }
 
   async function downloadZip() {
@@ -602,13 +729,25 @@ function App() {
         <section className="output-panel" data-tour="results">
           <div className="output-header">
             <div>
-              <h2>Результати</h2>
-              <p>{results.length ? `${formatFilesCount(results.length)} готово` : "Готові зображення з'являться тут."}</p>
+              <h2>Історія результатів</h2>
+              <p>
+                {isHistoryLoading
+                  ? "Завантажую збережені зображення..."
+                  : results.length
+                    ? `${formatFilesCount(results.length)} збережено`
+                    : "Готові зображення з'являться тут."}
+              </p>
             </div>
-            <button type="button" className="zip-button" disabled={!results.length} onClick={downloadZip}>
-              <Archive size={18} />
-              Завантажити ZIP
-            </button>
+            <div className="output-actions">
+              <button type="button" className="zip-button" disabled={!results.length} onClick={downloadZip}>
+                <Archive size={18} />
+                Завантажити ZIP
+              </button>
+              <button type="button" className="clear-history-button" disabled={!results.length || isRunning} onClick={clearHistory}>
+                <Trash2 size={18} />
+                Очистити
+              </button>
+            </div>
           </div>
 
           {isRunning || log.length ? (
@@ -630,7 +769,7 @@ function App() {
           {results.length ? (
             <div className="result-grid">
               {results.map((result) => (
-                <ResultTile key={result.id} result={result} />
+                <ResultTile key={result.id} result={result} onPreview={setPreviewResult} />
               ))}
             </div>
           ) : (
@@ -644,6 +783,8 @@ function App() {
           )}
         </section>
       </section>
+
+      <ImagePreview result={previewResult} onClose={() => setPreviewResult(null)} />
 
       <footer className="site-footer" id="footer">
         <p className="footer-credit">Solution designed by Valeriia Misiliuk</p>
@@ -669,4 +810,28 @@ function App() {
   );
 }
 
-createRoot(document.getElementById("root")).render(<App />);
+function Root() {
+  const [AgentationPanel, setAgentationPanel] = useState(null);
+
+  useEffect(() => {
+    if (!import.meta.env.DEV) return undefined;
+
+    let isMounted = true;
+    import("agentation").then(({ Agentation }) => {
+      if (isMounted) setAgentationPanel(() => Agentation);
+    });
+
+    return () => {
+      isMounted = false;
+    };
+  }, []);
+
+  return (
+    <>
+      <App />
+      {AgentationPanel && <AgentationPanel />}
+    </>
+  );
+}
+
+createRoot(document.getElementById("root")).render(<Root />);
